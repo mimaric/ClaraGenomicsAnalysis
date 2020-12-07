@@ -132,6 +132,9 @@ __global__ void find_front_end_minimizers(const std::uint64_t minimizer_size,
     char* minimizers_direction = reinterpret_cast<char*>(&sm[shared_memory_64_bit_elements_already_taken]); // blockDim.x - (minimizer_size - 1) elements; 0 - forward, 1 - reverse
     shared_memory_64_bit_elements_already_taken += (blockDim.x - (minimizer_size - 1) + 7) / 8;
 
+    char* minimizers_contain_n = reinterpret_cast<char*>(&sm[shared_memory_64_bit_elements_already_taken]); // kmers_to_process elements; 0 - does not contain, 1 - contains
+    shared_memory_64_bit_elements_already_taken += (window_size - 1 + 7) / 8;
+
     position_in_read_t* minimizers_position_in_read = reinterpret_cast<position_in_read_t*>(&sm[shared_memory_64_bit_elements_already_taken]);
     shared_memory_64_bit_elements_already_taken += (blockDim.x - (minimizer_size - 1) + 1) / 2;
 
@@ -159,7 +162,7 @@ __global__ void find_front_end_minimizers(const std::uint64_t minimizer_size,
         forward_to_reverse_complement[0b011] = 0b0111; // C -> G (0b11 -> 0b111)
         forward_to_reverse_complement[0b100] = 0b0001; // T -> A (0b10100 -> 0b1)
         forward_to_reverse_complement[0b101] = 0b0000;
-        forward_to_reverse_complement[0b110] = 0b0000;
+        forward_to_reverse_complement[0b110] = 0b0110; // N -> N
         forward_to_reverse_complement[0b111] = 0b0011; // G -> C (0b111 -> 0b11)
     }
     __syncthreads();
@@ -186,13 +189,18 @@ __global__ void find_front_end_minimizers(const std::uint64_t minimizer_size,
 
     for (std::uint32_t first_element_in_step = 0; first_element_in_step < window_size - 1; first_element_in_step += windows_per_loop_step)
     {
-
         // load basepairs into shared memory and calculate the lexical ordering hash
         if (first_element_in_step + threadIdx.x < window_size - 1 + minimizer_size - 1)
         { // window_size - 1 + minimizer_size - 1 -> total number of basepairs needed for all front minimizers
+            // A: 0100 0001 -> 0b111 & (0000 0001 >> 2 ^ 0100 0001 >> 1) -> 0b111 & (0000 0000 ^ 0010 0000) -> 0b111 & 0010 0000 -> 0b000
+            // C: 0100 0011 -> 0b111 & (0000 0011 >> 2 ^ 0100 0011 >> 1) -> 0b111 & (0000 0000 ^ 0010 0001) -> 0b111 & 0010 0001 -> 0b001
+            // G: 0100 0111 -> 0b111 & (0000 0111 >> 2 ^ 0100 0111 >> 1) -> 0b111 & (0000 0001 ^ 0010 0011) -> 0b111 & 0010 0010 -> 0b010
+            // T: 0101 0100 -> 0b111 & (0000 0100 >> 2 ^ 0101 0100 >> 1) -> 0b111 & (0000 0001 ^ 0010 0010) -> 0b111 & 0010 0011 -> 0b011
+            // N: 0100 1110 -> 0b111 & (0000 1110 >> 2 ^ 0100 1110 >> 1) -> 0b111 & (0000 0011 ^ 0010 0111) -> 0b111 & 0010 0100 -> 0b100
+
             const char bp                        = basepairs[input_array_first_element + first_element_in_step + threadIdx.x];
-            forward_basepair_hashes[threadIdx.x] = 0b11 & (bp >> 2 ^ bp >> 1);
-            reverse_basepair_hashes[threadIdx.x] = 0b11 & (forward_to_reverse_complement[0b111 & bp] >> 2 ^ forward_to_reverse_complement[0b111 & bp] >> 1);
+            forward_basepair_hashes[threadIdx.x] = 0b111 & ((0b1111 & bp) >> 2 ^ bp >> 1);
+            reverse_basepair_hashes[threadIdx.x] = 0b111 & ((0b1111 & forward_to_reverse_complement[0b111 & bp]) >> 2 ^ forward_to_reverse_complement[0b111 & bp] >> 1);
         }
         __syncthreads();
 
@@ -221,16 +229,25 @@ __global__ void find_front_end_minimizers(const std::uint64_t minimizer_size,
         // calculate minimizer for each kmer in front end windows
         if (thread_assigned_to_a_window)
         { // largest front minimizer window starts at basepar 0 and goes up to window_size -1
-            representation_t forward_representation = 0;
-            representation_t reverse_representation = 0;
+            representation_t forward_representation                   = 0;
+            representation_t reverse_representation                   = 0;
+            minimizers_contain_n[first_element_in_step + threadIdx.x] = 0;
             // TODO: It's not necessary to fully build both representations in order to determine which one is smaller. In most cases there is going to be a difference already at the first element
             for (std::uint16_t i = 0; i < minimizer_size; ++i)
             {
-                forward_representation |= forward_basepair_hashes[threadIdx.x + i] << 2 * (minimizer_size - i - 1);
+                const char forward_basepair_hash = forward_basepair_hashes[threadIdx.x + i];
+                if (forward_basepair_hash == 0b100)
+                {
+                    // if N is encountered any window containing this minimzer will be considered invalid, so minimizer representation isn't important and loop can be broken
+                    // there is no need to check reverse as if N exists in forward it will also exist in reverse direction and vice versa
+                    minimizers_contain_n[first_element_in_step + threadIdx.x] = 1;
+                    break;
+                }
+                forward_representation |= forward_basepair_hash << 2 * (minimizer_size - i - 1);
                 reverse_representation |= reverse_basepair_hashes[threadIdx.x + i] << 2 * i;
             }
 
-            if (hash_representations)
+            if (hash_representations && minimizers_contain_n[first_element_in_step + threadIdx.x] == 0)
             {
                 forward_representation = wang_hash64(forward_representation);
                 reverse_representation = wang_hash64(reverse_representation);
@@ -257,6 +274,8 @@ __global__ void find_front_end_minimizers(const std::uint64_t minimizer_size,
         // as the current window would check exaclty the same minimizers before checking minimizer first_element_in_step
         if (thread_assigned_to_a_window)
         {
+            different_minimizer_than_neighbors[threadIdx.x] = 1;
+            bool n_character_found                          = false;
             if (first_element_in_step != 0)
             {
                 window_minimizer_representation   = *minimizer_representation_of_largest_window_from_previous_step;
@@ -266,20 +285,45 @@ __global__ void find_front_end_minimizers(const std::uint64_t minimizer_size,
                     window_minimizer_representation   = minimizers_representation[0];
                     window_minimizer_position_in_read = first_element_in_step;
                 }
+
+                // check if any minimizer in the "old" part of window or this minimizer contains N character
+                // TODO: reuse this data
+                for (std::uint32_t i = 0; i <= first_element_in_step; ++i)
+                {
+                    if (minimizers_contain_n[i] == 1)
+                    {
+                        different_minimizer_than_neighbors[threadIdx.x] = 0;
+                        window_minimizer_position_in_read               = 0xFFFFFFFF; // TODO: set to read_length
+                        n_character_found                               = true;
+                        break;
+                    }
+                }
             }
             else
             {
                 window_minimizer_representation   = minimizers_representation[0];
                 window_minimizer_position_in_read = 0;
+                if (minimizers_contain_n[first_element_in_step] == 1)
+                {
+                    different_minimizer_than_neighbors[threadIdx.x] = 0;
+                    window_minimizer_position_in_read               = 0xFFFFFFFF; // TODO: set to read_length
+                    n_character_found                               = true;
+                }
             }
             // All threads have to wait for the largest block to finish. Probably no better solution without big restructuring
             // If there are several minimizers with the same representation only save the latest one (thus <=), others will be covered by smaller windows
-            for (std::uint16_t i = 1; i <= threadIdx.x; ++i)
+            for (std::uint16_t i = 1; i <= threadIdx.x && !n_character_found; ++i)
             {
                 if (minimizers_representation[i] <= window_minimizer_representation)
                 {
                     window_minimizer_representation   = minimizers_representation[i];
                     window_minimizer_position_in_read = first_element_in_step + i;
+
+                    if (minimizers_contain_n[first_element_in_step + i] == 1)
+                    {
+                        different_minimizer_than_neighbors[threadIdx.x] = 0;
+                        window_minimizer_position_in_read               = 0xFFFFFFFF; // TODO: set to read_length
+                    }
                 }
             }
             minimizers_position_in_read[threadIdx.x] = window_minimizer_position_in_read;
@@ -299,7 +343,7 @@ __global__ void find_front_end_minimizers(const std::uint64_t minimizer_size,
         // If we do an an inclusive scan on this array we get the indices to which the unique minimizers should be written to (plus one)
         // 1 1 2 3 3 4 4 5
         // From this it's clear that only the windows whose value is larger than the one of its neighbor should write its minimizer and it should write to the element with the index of value-1
-        if (first_element_in_step + threadIdx.x < window_size - 1 && threadIdx.x < windows_per_loop_step)
+        if (first_element_in_step + threadIdx.x < window_size - 1 && threadIdx.x < windows_per_loop_step && different_minimizer_than_neighbors[threadIdx.x] != 0)
         {
             if (0 == first_element_in_step && 0 == threadIdx.x)
             {
@@ -435,8 +479,11 @@ __global__ void find_central_minimizers(const std::uint64_t minimizer_size,
     representation_t* minimizers_representation = reinterpret_cast<representation_t*>(&sm[shared_memory_64_bit_elements_already_taken]); // kmers_loop_step elements
     shared_memory_64_bit_elements_already_taken += kmers_per_loop_step;
 
-    char* minimizers_direction = reinterpret_cast<char*>(&sm[shared_memory_64_bit_elements_already_taken]); // windows_per_loop_step elements; 0 - forward, 1 - reverse
-    shared_memory_64_bit_elements_already_taken += (windows_per_loop_step + 7) / 8;
+    char* minimizers_direction = reinterpret_cast<char*>(&sm[shared_memory_64_bit_elements_already_taken]); // kmers_per_loop_step elements; 0 - forward, 1 - reverse
+    shared_memory_64_bit_elements_already_taken += (kmers_per_loop_step + 7) / 8;
+
+    char* minimizers_contain_n = reinterpret_cast<char*>(&sm[shared_memory_64_bit_elements_already_taken]); // kmers_per_loop_step elements; 0 - does not contain, 1 - contains
+    shared_memory_64_bit_elements_already_taken += (kmers_per_loop_step - 1 + 7) / 8;
 
     position_in_read_t* minimizers_position_in_read = reinterpret_cast<position_in_read_t*>(&sm[shared_memory_64_bit_elements_already_taken]);
     shared_memory_64_bit_elements_already_taken += (windows_per_loop_step + 1) / 2;
@@ -461,7 +508,7 @@ __global__ void find_central_minimizers(const std::uint64_t minimizer_size,
         forward_to_reverse_complement[0b011] = 0b0111; // C -> G (0b11 -> 0b111)
         forward_to_reverse_complement[0b100] = 0b0001; // T -> A (0b10100 -> 0b1)
         forward_to_reverse_complement[0b101] = 0b0000;
-        forward_to_reverse_complement[0b110] = 0b0000;
+        forward_to_reverse_complement[0b110] = 0b0110; // N -> N
         forward_to_reverse_complement[0b111] = 0b0011; // G -> C (0b111 -> 0b11)
     }
     __syncthreads();
@@ -483,9 +530,14 @@ __global__ void find_central_minimizers(const std::uint64_t minimizer_size,
         // load basepairs into shared memory and calculate the lexical ordering hash
         for (std::uint32_t basepair_index = threadIdx.x; basepair_index < basepairs_per_loop_step && first_element_in_step + basepair_index < basepairs_in_read; basepair_index += blockDim.x)
         {
+            // A: 0100 0001 -> 0b111 & (0000 0001 >> 2 ^ 0100 0001 >> 1) -> 0b111 & (0000 0000 ^ 0010 0000) -> 0b111 & 0010 0000 -> 0b000
+            // C: 0100 0011 -> 0b111 & (0000 0011 >> 2 ^ 0100 0011 >> 1) -> 0b111 & (0000 0000 ^ 0010 0001) -> 0b111 & 0010 0001 -> 0b001
+            // G: 0100 0111 -> 0b111 & (0000 0111 >> 2 ^ 0100 0111 >> 1) -> 0b111 & (0000 0001 ^ 0010 0011) -> 0b111 & 0010 0010 -> 0b010
+            // T: 0101 0100 -> 0b111 & (0000 0100 >> 2 ^ 0101 0100 >> 1) -> 0b111 & (0000 0001 ^ 0010 0010) -> 0b111 & 0010 0011 -> 0b011
+            // N: 0100 1110 -> 0b111 & (0000 1110 >> 2 ^ 0100 1110 >> 1) -> 0b111 & (0000 0011 ^ 0010 0111) -> 0b111 & 0010 0100 -> 0b100
             const char bp                           = basepairs[index_of_first_element_to_process_global + first_element_in_step + basepair_index];
-            forward_basepair_hashes[basepair_index] = 0b11 & (bp >> 2 ^ bp >> 1);
-            reverse_basepair_hashes[basepair_index] = 0b11 & (forward_to_reverse_complement[0b111 & bp] >> 2 ^ forward_to_reverse_complement[0b111 & bp] >> 1);
+            forward_basepair_hashes[basepair_index] = 0b111 & ((0b1111 & bp) >> 2 ^ bp >> 1);
+            reverse_basepair_hashes[basepair_index] = 0b111 & ((0b1111 & forward_to_reverse_complement[0b111 & bp]) >> 2 ^ forward_to_reverse_complement[0b111 & bp] >> 1);
         }
         __syncthreads();
 
@@ -494,14 +546,23 @@ __global__ void find_central_minimizers(const std::uint64_t minimizer_size,
         {
             representation_t forward_representation = 0;
             representation_t reverse_representation = 0;
+            minimizers_contain_n[kmer_index]        = 0;
             // TODO: It's not necessary to fully build both representations in order to determine which one is smaller. In most cases there is going to be a difference already at the first element
             for (std::uint16_t i = 0; i < minimizer_size; ++i)
             {
-                forward_representation |= forward_basepair_hashes[kmer_index + i] << 2 * (minimizer_size - i - 1);
+                const char forward_basepair_hash = forward_basepair_hashes[kmer_index + i];
+                if (forward_basepair_hash == 0b100)
+                {
+                    // if N is encountered any window containing this minimzer will be considered invalid, so minimizer representation isn't important and loop can be broken
+                    // there is no need to check reverse as if N exists in forward it will also exist in reverse direction and vice versa
+                    minimizers_contain_n[kmer_index] = 1;
+                    break;
+                }
+                forward_representation |= forward_basepair_hash << 2 * (minimizer_size - i - 1);
                 reverse_representation |= reverse_basepair_hashes[kmer_index + i] << 2 * i;
             }
 
-            if (hash_representations)
+            if (hash_representations && minimizers_contain_n[kmer_index] == 0)
             {
                 forward_representation = wang_hash64(forward_representation);
                 reverse_representation = wang_hash64(reverse_representation);
@@ -523,12 +584,30 @@ __global__ void find_central_minimizers(const std::uint64_t minimizer_size,
         // find window minimizer
         for (std::uint32_t window_index = threadIdx.x; window_index < windows_per_loop_step && first_element_in_step + window_index < windows_in_read; window_index += blockDim.x)
         {
+            different_minimizer_than_neighbors[window_index] = 1;
             // assume that the minimizer of the first kmer in step is the window minimizer
             representation_t window_minimizer_representation = minimizers_representation[window_index];
             window_minimizer_position_in_read                = first_element_in_step + window_index;
+            if (minimizers_contain_n[window_index] == 1)
+            {
+                // if window contains a minimizer with basepair N it is ignored and it's value is set to an invalid value
+                // (e.g. value greater than the total number of basepairs is read) so the next window definitely won't have
+                // the same minimizer value
+                different_minimizer_than_neighbors[window_index] = 0;
+                window_minimizer_position_in_read                = 0xFFFFFFFF; // TODO: set to read_length
+                continue;
+            }
+
             // now check the minimizers of all other windows
             for (std::uint16_t i = 1; i < window_size; ++i)
             {
+                if (minimizers_contain_n[window_index + i] == 1)
+                {
+                    different_minimizer_than_neighbors[window_index] = 0;
+                    window_minimizer_position_in_read                = 0xFFFFFFFF; // TODO: set to read_length
+                    break;
+                }
+
                 if (minimizers_representation[window_index + i] <= window_minimizer_representation)
                 {
                     window_minimizer_representation   = minimizers_representation[window_index + i];
@@ -542,6 +621,12 @@ __global__ void find_central_minimizers(const std::uint64_t minimizer_size,
         // check if the window to the left has a the same minimizer
         for (std::uint32_t window_index = threadIdx.x; window_index < windows_per_loop_step && first_element_in_step + window_index < windows_in_read; window_index += blockDim.x)
         {
+            if (different_minimizer_than_neighbors[window_index] == 0)
+            {
+                // if window contains a minimizer with basepair N it is anyway going to be ignored
+                continue;
+            }
+
             // if this is the first window in read and there were no front end minimizers than this is the first occurence of this minimizer
             if (0 == first_element_in_step + window_index && 0 == read_id_to_minimizers_written[blockIdx.x])
             {
@@ -684,6 +769,9 @@ __global__ void find_back_end_minimizers(const std::uint64_t minimizer_size,
     char* minimizers_direction = reinterpret_cast<char*>(&sm[shared_memory_64_bit_elements_already_taken]); // kmers_to_process elements; 0 - forward, 1 - reverse
     shared_memory_64_bit_elements_already_taken += (window_size - 1 + 7) / 8;
 
+    char* minimizers_contain_n = reinterpret_cast<char*>(&sm[shared_memory_64_bit_elements_already_taken]); // kmers_to_process elements; 0 - does not contain, 1 - contains
+    shared_memory_64_bit_elements_already_taken += (window_size - 1 + 7) / 8;
+
     position_in_read_t* minimizers_position_in_read = reinterpret_cast<position_in_read_t*>(&sm[shared_memory_64_bit_elements_already_taken]); // windows_to_process elements
     shared_memory_64_bit_elements_already_taken += (window_size - 1 + 1) / 2;
 
@@ -701,7 +789,7 @@ __global__ void find_back_end_minimizers(const std::uint64_t minimizer_size,
         forward_to_reverse_complement[0b011] = 0b0111; // C -> G (0b11 -> 0b111)
         forward_to_reverse_complement[0b100] = 0b0001; // T -> A (0b10100 -> 0b1)
         forward_to_reverse_complement[0b101] = 0b0000;
-        forward_to_reverse_complement[0b110] = 0b0000;
+        forward_to_reverse_complement[0b110] = 0b0110; // N -> N
         forward_to_reverse_complement[0b111] = 0b0011; // G -> C (0b111 -> 0b11)
     }
     __syncthreads();
@@ -713,9 +801,14 @@ __global__ void find_back_end_minimizers(const std::uint64_t minimizer_size,
     // load basepairs into shared memory and calculate the lexical ordering hash
     for (std::uint16_t basepair_index = threadIdx.x; basepair_index < window_size - 1 + minimizer_size - 1; basepair_index += blockDim.x)
     {
+        // A: 0100 0001 -> 0b111 & (0000 0001 >> 2 ^ 0100 0001 >> 1) -> 0b111 & (0000 0000 ^ 0010 0000) -> 0b111 & 0010 0000 -> 0b000
+        // C: 0100 0011 -> 0b111 & (0000 0011 >> 2 ^ 0100 0011 >> 1) -> 0b111 & (0000 0000 ^ 0010 0001) -> 0b111 & 0010 0001 -> 0b001
+        // G: 0100 0111 -> 0b111 & (0000 0111 >> 2 ^ 0100 0111 >> 1) -> 0b111 & (0000 0001 ^ 0010 0011) -> 0b111 & 0010 0010 -> 0b010
+        // T: 0101 0100 -> 0b111 & (0000 0100 >> 2 ^ 0101 0100 >> 1) -> 0b111 & (0000 0001 ^ 0010 0010) -> 0b111 & 0010 0011 -> 0b011
+        // N: 0100 1110 -> 0b111 & (0000 1110 >> 2 ^ 0100 1110 >> 1) -> 0b111 & (0000 0011 ^ 0010 0111) -> 0b111 & 0010 0100 -> 0b100
         const char bp                           = basepairs[index_of_first_element_to_process_global + basepair_index];
-        forward_basepair_hashes[basepair_index] = 0b11 & (bp >> 2 ^ bp >> 1);
-        reverse_basepair_hashes[basepair_index] = 0b11 & (forward_to_reverse_complement[0b111 & bp] >> 2 ^ forward_to_reverse_complement[0b111 & bp] >> 1);
+        forward_basepair_hashes[basepair_index] = 0b111 & ((0b1111 & bp) >> 2 ^ bp >> 1);
+        reverse_basepair_hashes[basepair_index] = 0b111 & ((0b1111 & forward_to_reverse_complement[0b111 & bp]) >> 2 ^ forward_to_reverse_complement[0b111 & bp] >> 1);
     }
     __syncthreads();
 
@@ -725,14 +818,23 @@ __global__ void find_back_end_minimizers(const std::uint64_t minimizer_size,
     {
         representation_t forward_representation = 0;
         representation_t reverse_representation = 0;
+        minimizers_contain_n[kmer_index]        = 0;
         // TODO: It's not necessary to fully build both representations in order to determine which one is smaller. In most cases there is going to be a difference already at the first element
         for (std::uint16_t i = 0; i < minimizer_size; ++i)
         {
-            forward_representation |= forward_basepair_hashes[kmer_index + i] << 2 * (minimizer_size - i - 1);
+            const char forward_basepair_hash = forward_basepair_hashes[kmer_index + i];
+            if (forward_basepair_hash == 0b100)
+            {
+                // if N is encountered any window containing this minimzer will be considered invalid, so minimizer representation isn't important and loop can be broken
+                // there is no need to check reverse as if N exists in forward it will also exist in reverse direction and vice versa
+                minimizers_contain_n[kmer_index] = 1;
+                break;
+            }
+            forward_representation |= forward_basepair_hash << 2 * (minimizer_size - i - 1);
             reverse_representation |= reverse_basepair_hashes[kmer_index + i] << 2 * i;
         }
 
-        if (hash_representations)
+        if (hash_representations && minimizers_contain_n[kmer_index] == 0)
         {
             forward_representation = wang_hash64(forward_representation);
             reverse_representation = wang_hash64(reverse_representation);
@@ -751,14 +853,33 @@ __global__ void find_back_end_minimizers(const std::uint64_t minimizer_size,
     __syncthreads();
 
     // find window minimizer
-    for (std::uint16_t window_index = threadIdx.x; window_index < window_size - 1; window_index += blockDim.x)
+    for (std::uint32_t window_index = threadIdx.x; window_index < window_size - 1; window_index += blockDim.x)
     {
+        different_minimizer_than_neighbors[window_index] = 1;
         // assume that the first kmer in the window is the minimizer
         representation_t window_minimizer_representation     = minimizers_representation[window_index];
         position_in_read_t window_minimizer_position_in_read = index_of_first_element_to_process_local + window_index;
-        // now check other kmers in the window (note that this the back end minimizer, so not all windows have the same length)
-        for (std::uint16_t i = 1; window_index + i < window_size - 1; ++i)
+
+        if (minimizers_contain_n[window_index] == 1)
         {
+            // if window contains a minimizer with basepair N it is ignored and it's value is set to an invalid value
+            // (e.g. value greater than the total number of basepairs is read) so the next window definitely won't have
+            // the same minimizer value
+            different_minimizer_than_neighbors[window_index] = 0;
+            minimizers_position_in_read[window_index]        = 0xFFFFFFFF; // TODO: set to read_length
+            continue;
+        }
+
+        // now check other kmers in the window (note that this the back end minimizer, so not all windows have the same length)
+        for (std::uint32_t i = 1; window_index + i < window_size - 1; ++i)
+        {
+            if (minimizers_contain_n[window_index + i] == 1)
+            {
+                different_minimizer_than_neighbors[window_index] = 0;
+                window_minimizer_position_in_read                = 0xFFFFFFFF; // TODO: set to read_length
+                break;
+            }
+
             if (minimizers_representation[window_index + i] <= window_minimizer_representation)
             {
                 window_minimizer_representation   = minimizers_representation[window_index + i];
@@ -772,6 +893,12 @@ __global__ void find_back_end_minimizers(const std::uint64_t minimizer_size,
     // check if the window to the left has a the same minimizer
     for (std::uint16_t window_index = threadIdx.x; window_index < window_size - 1; window_index += blockDim.x)
     {
+        if (different_minimizer_than_neighbors[window_index] == 0)
+        {
+            // if window contains a minimizer with basepair N it is anyway going to be ignored
+            continue;
+        }
+
         representation_t neighbors_minimizers_position_in_read = 0;
         // find left neighbor's window minimizer's position in read
         if (0 == window_index)
@@ -926,7 +1053,8 @@ Minimizer::GeneratedSketchElements Minimizer::generate_sketch_elements(DefaultDe
     shared_memory_for_kernel += (basepairs_for_end_minimizers + 7) / 8; // forward basepairs (char)
     shared_memory_for_kernel += (basepairs_for_end_minimizers + 7) / 8; // reverse basepairs (char)
     shared_memory_for_kernel += (kmers_for_end_minimizers);             // representations of minimizers (representation_t)
-    shared_memory_for_kernel += (windows_for_end_minimizers + 7) / 8;   // directions of representations of minimizers (char)
+    shared_memory_for_kernel += (kmers_for_end_minimizers + 7) / 8;     // directions of representations of minimizers (char)
+    shared_memory_for_kernel += (kmers_for_end_minimizers + 7) / 8;     // minimizer contains N basepair (char)
     shared_memory_for_kernel += (windows_for_end_minimizers + 1) / 2;   // position_in_read of minimizers (position_in_read_t)
     shared_memory_for_kernel += (windows_for_end_minimizers + 1) / 2;   // does the window have a different minimizer than its left neighbor (position_in_read_t)
     shared_memory_for_kernel += 1;                                      // representation from previous step
@@ -956,15 +1084,16 @@ Minimizer::GeneratedSketchElements Minimizer::generate_sketch_elements(DefaultDe
     const std::uint32_t windows_in_loop_step    = minimizers_in_loop_step - window_size + 1;
 
     shared_memory_for_kernel = 0;
-    shared_memory_for_kernel += (basepairs_in_loop_step + 7) / 8; // forward basepairs (char)
-    shared_memory_for_kernel += (basepairs_in_loop_step + 7) / 8; // reverse basepairs (char)
-    shared_memory_for_kernel += minimizers_in_loop_step;          // representations of minimizers (representation_t)
-    shared_memory_for_kernel += (windows_in_loop_step + 7) / 8;   // directions of representations of minimizers (char)
-    shared_memory_for_kernel += (windows_in_loop_step + 1) / 2;   // position_in_read of minimizers (position_in_read_t)
-    shared_memory_for_kernel += (windows_in_loop_step + 1) / 2;   // does the window have a different minimizer than its left neighbor
-    shared_memory_for_kernel += (1 + 1) / 2;                      // position from previous step (char)
-    shared_memory_for_kernel += (1 + 1) / 2;                      // inclusive sum from previous step (position_in_read_t)
-    shared_memory_for_kernel += 8 / 8;                            // forward -> reverse complement conversion (char)
+    shared_memory_for_kernel += (basepairs_in_loop_step + 7) / 8;  // forward basepairs (char)
+    shared_memory_for_kernel += (basepairs_in_loop_step + 7) / 8;  // reverse basepairs (char)
+    shared_memory_for_kernel += minimizers_in_loop_step;           // representations of minimizers (representation_t)
+    shared_memory_for_kernel += (minimizers_in_loop_step + 7) / 8; // directions of representations of minimizers (char)
+    shared_memory_for_kernel += (minimizers_in_loop_step + 7) / 8; // minimizer contains N basepair (char)
+    shared_memory_for_kernel += (windows_in_loop_step + 1) / 2;    // position_in_read of minimizers (position_in_read_t)
+    shared_memory_for_kernel += (windows_in_loop_step + 1) / 2;    // does the window have a different minimizer than its left neighbor
+    shared_memory_for_kernel += (1 + 1) / 2;                       // position from previous step (char)
+    shared_memory_for_kernel += (1 + 1) / 2;                       // inclusive sum from previous step (position_in_read_t)
+    shared_memory_for_kernel += 8 / 8;                             // forward -> reverse complement conversion (char)
 
     shared_memory_for_kernel *= 8; // before it the number of 8-byte values, now get the number of bytes
 
@@ -989,6 +1118,7 @@ Minimizer::GeneratedSketchElements Minimizer::generate_sketch_elements(DefaultDe
     shared_memory_for_kernel += (basepairs_for_end_minimizers + 7) / 8; // reverse basepairs (char)
     shared_memory_for_kernel += kmers_for_end_minimizers;               // representations of minimizers (representation_t)
     shared_memory_for_kernel += (kmers_for_end_minimizers + 7) / 8;     // directions of representations of minimizers (char)
+    shared_memory_for_kernel += (kmers_for_end_minimizers + 7) / 8;     // minimizer contains N basepair (char)
     shared_memory_for_kernel += (windows_for_end_minimizers + 1) / 2;   // position_in_read of minimizers (position_in_read_t)
     shared_memory_for_kernel += (windows_for_end_minimizers + 1) / 2;   // does the window have a different minimizer than its left neighbor
     shared_memory_for_kernel += 8 / 8;                                  // forward -> reverse complement conversion (char)

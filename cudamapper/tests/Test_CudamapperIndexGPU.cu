@@ -2195,6 +2195,260 @@ TEST(TestCudamapperIndexGPU, AAAACTGAA_GCCAAAG_2_3_only_second_read_in_index)
                   expected_number_of_basepairs_in_longest_read);
 }
 
+TEST(TestCudamapperIndexGPU, CATCAAGTGNTCCA_3_2)
+{
+    // >read_0
+    // CATCAAGTGNTCCA
+
+    // ** CATCAAGTGNTCCA **
+
+    // kmer representation: forward, reverse
+    // CAT:  103  <032>
+    // ATC: <031>  203
+    // TCA: <310>  320
+    // CAA: <100>  332
+    // AAG: <002>  133
+    // AGT:  023  <013>
+    // GTG:  232  <101>
+    // TGN:  N/A   N/A
+    // GNT:  N/A   N/A
+    // NTC:  N/A   N/A
+    // TCC:  311  <220>
+    // CCA: <110>  322
+
+    // front end minimizers: representation, position_in_read, direction, read_id
+    // CAT: 032 0 R 0
+
+    // central minimizers
+    // CATC: 031 1 F 0
+    // ATCA: 031 1 F 0
+    // TCAA: 100 3 F 0
+    // CAAG: 002 4 F 0
+    // AAGT: 002 4 F 0
+    // AGTG: 013 5 R 0
+    // GTGN: N/A
+    // TGNT: N/A
+    // GNTC: N/A
+    // NTCC: N/A
+    // TCCA: 110 11 F 0
+
+    // back end minimizers
+    // CCA:  110 11 F 0
+
+    // All minimizers: CAT(0r), ATC(1f), CAA(3f), AAG(4f), AGT(5r), CCA(11f)
+
+    // (2r1) means position 2, reverse direction, read 1
+    // (1,2) means array block start at element 1 and has 2 elements
+
+    //              0         1         2         3         4         5
+    // data arrays: AAG(4f0), AGT(5r0), ATC(1f0), CAT(0r0), CAA(3f0), CCA(11f0)
+
+    const std::string filename         = std::string(CUDAMAPPER_BENCHMARK_DATA_DIR) + "/catcaagtgntcca.fasta";
+    const std::uint64_t minimizer_size = 3;
+    const std::uint64_t window_size    = 2;
+
+    std::vector<representation_t> expected_representations;
+    std::vector<position_in_read_t> expected_positions_in_reads;
+    std::vector<read_id_t> expected_read_ids;
+    std::vector<SketchElement::DirectionOfRepresentation> expected_directions_of_reads;
+    std::vector<representation_t> expected_unique_representations;
+    std::vector<std::uint32_t> expected_first_occurrence_of_representations;
+
+    expected_representations.push_back(0b000010); // AAG(4f0)
+    expected_positions_in_reads.push_back(4);
+    expected_read_ids.push_back(0);
+    expected_directions_of_reads.push_back(SketchElement::DirectionOfRepresentation::FORWARD);
+    expected_unique_representations.push_back(0b000010);
+    expected_first_occurrence_of_representations.push_back(0);
+    expected_representations.push_back(0b000111); // AGT(5r0)
+    expected_positions_in_reads.push_back(5);
+    expected_read_ids.push_back(0);
+    expected_directions_of_reads.push_back(SketchElement::DirectionOfRepresentation::REVERSE);
+    expected_unique_representations.push_back(0b000111);
+    expected_first_occurrence_of_representations.push_back(1);
+    expected_representations.push_back(0b001101); // ATC(1f)
+    expected_positions_in_reads.push_back(1);
+    expected_read_ids.push_back(0);
+    expected_directions_of_reads.push_back(SketchElement::DirectionOfRepresentation::FORWARD);
+    expected_unique_representations.push_back(0b001101);
+    expected_first_occurrence_of_representations.push_back(2);
+    expected_representations.push_back(0b001110); // CAT(0r0)
+    expected_positions_in_reads.push_back(0);
+    expected_read_ids.push_back(0);
+    expected_directions_of_reads.push_back(SketchElement::DirectionOfRepresentation::REVERSE);
+    expected_unique_representations.push_back(0b001110);
+    expected_first_occurrence_of_representations.push_back(3);
+    expected_representations.push_back(0b010000); // CAA(3f)
+    expected_positions_in_reads.push_back(3);
+    expected_read_ids.push_back(0);
+    expected_directions_of_reads.push_back(SketchElement::DirectionOfRepresentation::FORWARD);
+    expected_unique_representations.push_back(0b010000);
+    expected_first_occurrence_of_representations.push_back(4);
+    expected_representations.push_back(0b010100); // CCA(10f0)
+    expected_positions_in_reads.push_back(11);
+    expected_read_ids.push_back(0);
+    expected_directions_of_reads.push_back(SketchElement::DirectionOfRepresentation::FORWARD);
+    expected_unique_representations.push_back(0b010100);
+    expected_first_occurrence_of_representations.push_back(5);
+
+    expected_first_occurrence_of_representations.push_back(6);
+
+    const read_id_t expected_number_of_reads                              = 1;
+    const read_id_t expected_smallest_read_id                             = 0;
+    const read_id_t expected_largest_read_id                              = 0;
+    const position_in_read_t expected_number_of_basepairs_in_longest_read = 14;
+
+    test_function(filename,
+                  0,
+                  1,
+                  expected_smallest_read_id,
+                  expected_largest_read_id,
+                  minimizer_size,
+                  window_size,
+                  expected_representations,
+                  expected_positions_in_reads,
+                  expected_read_ids,
+                  expected_directions_of_reads,
+                  expected_unique_representations,
+                  expected_first_occurrence_of_representations,
+                  expected_number_of_reads,
+                  expected_number_of_basepairs_in_longest_read);
+}
+
+TEST(TestCudamapperIndexGPU, CNTCAAGTGAGGTACCTGNCCT_3_4)
+{
+    // >read_0
+    // CNTCAAGTGAGGTACCTGNCCT
+
+    // ** CNTCAAGTGAGGTACCTGNCCT **
+
+    // kmer representation: forward, reverse
+    // CNT  N/A
+    // NTC  N/A
+    // TCA <310> 320
+    // CAA <100> 332
+    // AAG <002> 133
+    // AGT  023  <013>
+    // GTG  232  <101>
+    // TGA  320  <310>
+    // GAG  202  <131>
+    // AGG <022>  113
+    // GGT  223  <011>
+    // GTA <230>  301
+    // TAC  301  <230>
+    // ACC <011>  223
+    // CCT  113  <022>
+    // CTG  132  <102>
+    // TGN  N/A
+    // GNC  N/A
+    // NCC  N/A
+    // CCT  113  <022>
+
+    // front end minimizers: representation, position_in_read, direction, read_id
+    // CNT   : N/A
+    // CNTC  : N/A
+    // CNTCA : N/A
+
+    // central minimizers
+    // CNTCAA : N/A
+    // NTCAAG : N/A
+    // TCAAGT : 002 4  F
+    // CAAGTG : 002 4  F
+    // AAGTGA : 002 4  F
+    // AGTGAG : 013 5  R
+    // GTGAGG : 022 9  F
+    // TGAGGT : 011 10 R
+    // GAGGTA : 011 10 R
+    // AGGTAC : 011 10 R
+    // GGTACC : 011 13 F
+    // GTACCT : 011 13 F
+    // TACCTG : 011 13 F
+    // ACCTGN : N/A
+    // CCTGNC : N/A
+    // CTGNCC : N/A
+    // TGNCCT : N/A
+
+    // back end minimizers
+    // GNCCT : N/A
+    // NCCT  : N/A
+    // CCT   : 022 19 R
+
+    // All minimizers: AAG(4f), AGT(5r), AGG(9f), GGT(10r), ACC(13f), CCT(19r)
+
+    // (2r1) means position 2, reverse direction, read 1
+    // (1,2) means array block start at element 1 and has 2 elements
+
+    //              0         1          2          3         4         5
+    // data arrays: AAG(4f0), GGT(10r0), ACC(13f0), AGT(5r0), AGG(9f0), CCT(19r0)
+
+    const std::string filename         = std::string(CUDAMAPPER_BENCHMARK_DATA_DIR) + "/cntcaagtgaggtacctgncct.fasta";
+    const std::uint64_t minimizer_size = 3;
+    const std::uint64_t window_size    = 4;
+
+    std::vector<representation_t> expected_representations;
+    std::vector<position_in_read_t> expected_positions_in_reads;
+    std::vector<read_id_t> expected_read_ids;
+    std::vector<SketchElement::DirectionOfRepresentation> expected_directions_of_reads;
+    std::vector<representation_t> expected_unique_representations;
+    std::vector<std::uint32_t> expected_first_occurrence_of_representations;
+
+    expected_representations.push_back(0b000010); // AAG(4f0)
+    expected_positions_in_reads.push_back(4);
+    expected_read_ids.push_back(0);
+    expected_directions_of_reads.push_back(SketchElement::DirectionOfRepresentation::FORWARD);
+    expected_unique_representations.push_back(0b000010);
+    expected_first_occurrence_of_representations.push_back(0);
+    expected_representations.push_back(0b000101); // GGT(10r0)
+    expected_positions_in_reads.push_back(10);
+    expected_read_ids.push_back(0);
+    expected_directions_of_reads.push_back(SketchElement::DirectionOfRepresentation::REVERSE);
+    expected_unique_representations.push_back(0b000101);
+    expected_first_occurrence_of_representations.push_back(1);
+    expected_representations.push_back(0b000101); // ACC(13f0)
+    expected_positions_in_reads.push_back(13);
+    expected_read_ids.push_back(0);
+    expected_directions_of_reads.push_back(SketchElement::DirectionOfRepresentation::FORWARD);
+    expected_representations.push_back(0b000111); // AGT(5r0)
+    expected_positions_in_reads.push_back(5);
+    expected_read_ids.push_back(0);
+    expected_directions_of_reads.push_back(SketchElement::DirectionOfRepresentation::REVERSE);
+    expected_unique_representations.push_back(0b000111);
+    expected_first_occurrence_of_representations.push_back(3);
+    expected_representations.push_back(0b001010); // AGG(9f0)
+    expected_positions_in_reads.push_back(9);
+    expected_read_ids.push_back(0);
+    expected_directions_of_reads.push_back(SketchElement::DirectionOfRepresentation::FORWARD);
+    expected_unique_representations.push_back(0b001010);
+    expected_first_occurrence_of_representations.push_back(4);
+    expected_representations.push_back(0b001010); // CCT(19r0)
+    expected_positions_in_reads.push_back(19);
+    expected_read_ids.push_back(0);
+    expected_directions_of_reads.push_back(SketchElement::DirectionOfRepresentation::REVERSE);
+
+    expected_first_occurrence_of_representations.push_back(6);
+
+    const read_id_t expected_number_of_reads                              = 1;
+    const read_id_t expected_smallest_read_id                             = 0;
+    const read_id_t expected_largest_read_id                              = 0;
+    const position_in_read_t expected_number_of_basepairs_in_longest_read = 22;
+
+    test_function(filename,
+                  0,
+                  1,
+                  expected_smallest_read_id,
+                  expected_largest_read_id,
+                  minimizer_size,
+                  window_size,
+                  expected_representations,
+                  expected_positions_in_reads,
+                  expected_read_ids,
+                  expected_directions_of_reads,
+                  expected_unique_representations,
+                  expected_first_occurrence_of_representations,
+                  expected_number_of_reads,
+                  expected_number_of_basepairs_in_longest_read);
+}
+
 TEST(TestCudamapperIndexGPU, AAAACTGAA_GCCAAAG_2_3_filtering)
 {
     // >read_0

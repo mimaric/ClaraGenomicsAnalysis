@@ -488,6 +488,7 @@ TEST(TestCudamappperMinimizer, CATCAAG_AAGCTA_3_2_read_id_offset_5)
                   expected_rest_h,
                   false);
 
+    // Test with minimizer hashing enabled
     std::vector<representation_t> expected_representations_hashed_h;
     expected_representations_hashed_h.push_back(549100223);
     expected_representations_hashed_h.push_back(447855090);
@@ -514,8 +515,228 @@ TEST(TestCudamappperMinimizer, CATCAAG_AAGCTA_3_2_read_id_offset_5)
                   expected_representations_hashed_h,
                   expected_rest_hashed_h,
                   true);
-    // Test with minimizer hashing enabled
 }
+
+TEST(TestCudamappperMinimizer, CATCAAGTGNTCCA_3_2)
+{
+    // CATCAAGTGNTCCA
+
+    // kmer representation: forward, reverse
+    // CAT:  103  <032>
+    // ATC: <031>  203
+    // TCA: <310>  320
+    // CAA: <100>  332
+    // AAG: <002>  133
+    // AGT:  023  <013>
+    // GTG:  232  <101>
+    // TGN:  N/A   N/A
+    // GNT:  N/A   N/A
+    // NTC:  N/A   N/A
+    // TCC:  311  <220>
+    // CCA: <110>  322
+
+    // front end minimizers: representation, position_in_read, direction, read_id
+    // CAT: 032 0 R 0
+
+    // central minimizers
+    // CATC: 031 1 F 0
+    // ATCA: 031 1 F 0
+    // TCAA: 100 3 F 0
+    // CAAG: 002 4 F 0
+    // AAGT: 002 4 F 0
+    // AGTG: 013 5 R 0
+    // GTGN: N/A
+    // TGNT: N/A
+    // GNTC: N/A
+    // NTCC: N/A
+    // TCCA: 110 11 F 0
+
+    // back end minimizers
+    // CCA:  110 11 F 0
+
+    const read_id_t number_of_reads_to_add    = 1;
+    const std::uint64_t minimizer_size        = 3;
+    const std::uint64_t window_size           = 2;
+    const std::uint64_t read_id_of_first_read = 0;
+
+    const std::vector<char> merged_basepairs_h{'C', 'A', 'T', 'C', 'A', 'A', 'G', 'T', 'G', 'N', 'T', 'C', 'C', 'A'};
+
+    std::vector<ArrayBlock> read_id_to_basepairs_section_h;
+    read_id_to_basepairs_section_h.push_back({0, 14});
+
+    std::vector<representation_t> expected_representations_h;
+    expected_representations_h.push_back(0b001110);
+    expected_representations_h.push_back(0b001101);
+    expected_representations_h.push_back(0b010000);
+    expected_representations_h.push_back(0b000010);
+    expected_representations_h.push_back(0b000111);
+    expected_representations_h.push_back(0b010100);
+    std::vector<Minimizer::ReadidPositionDirection> expected_rest_h;
+    expected_rest_h.push_back({0, 0, 1});
+    expected_rest_h.push_back({0, 1, 0});
+    expected_rest_h.push_back({0, 3, 0});
+    expected_rest_h.push_back({0, 4, 0});
+    expected_rest_h.push_back({0, 5, 1});
+    expected_rest_h.push_back({0, 11, 0});
+
+    test_function(number_of_reads_to_add,
+                  minimizer_size,
+                  window_size,
+                  read_id_of_first_read,
+                  merged_basepairs_h,
+                  read_id_to_basepairs_section_h,
+                  expected_representations_h,
+                  expected_rest_h,
+                  false);
+
+    // Test with minimizer hashing enabled
+    std::vector<representation_t> expected_representations_hashed_h;
+    expected_representations_hashed_h.push_back(549100223);
+    expected_representations_hashed_h.push_back(447855090);
+    expected_representations_hashed_h.push_back(1279515286);
+    expected_representations_hashed_h.push_back(1865025060);
+    expected_representations_hashed_h.push_back(831403820);
+    expected_representations_hashed_h.push_back(437279381);
+    std::vector<Minimizer::ReadidPositionDirection> expected_rest_hashed_h;
+    expected_rest_hashed_h.push_back({0, 0, 0});
+    expected_rest_hashed_h.push_back({0, 1, 1});
+    expected_rest_hashed_h.push_back({0, 2, 0});
+    expected_rest_hashed_h.push_back({0, 4, 0});
+    expected_rest_hashed_h.push_back({0, 6, 1});
+    expected_rest_hashed_h.push_back({0, 11, 1});
+
+    test_function(number_of_reads_to_add,
+                  minimizer_size,
+                  window_size,
+                  read_id_of_first_read,
+                  merged_basepairs_h,
+                  read_id_to_basepairs_section_h,
+                  expected_representations_hashed_h,
+                  expected_rest_hashed_h,
+                  true);
+}
+
+TEST(TestCudamappperMinimizer, CNTCAAGTGAGGTACCTGNCCT_3_4)
+{
+    // CNTCAAGTGAGGTACCTGNCCT
+
+    // kmer representation: forward, reverse
+    // CNT  N/A
+    // NTC  N/A
+    // TCA <310> 320
+    // CAA <100> 332
+    // AAG <002> 133
+    // AGT  023  <013>
+    // GTG  232  <101>
+    // TGA  320  <310>
+    // GAG  202  <131>
+    // AGG <022>  113
+    // GGT  223  <011>
+    // GTA <230>  301
+    // TAC  301  <230>
+    // ACC <011>  223
+    // CCT  113  <022>
+    // CTG  132  <102>
+    // TGN  N/A
+    // GNC  N/A
+    // NCC  N/A
+    // CCT  113  <022>
+
+    // front end minimizers: representation, position_in_read, direction, read_id
+    // CNT   : N/A
+    // CNTC  : N/A
+    // CNTCA : N/A
+
+    // central minimizers
+    // CNTCAA : N/A
+    // NTCAAG : N/A
+    // TCAAGT : 002 4  F
+    // CAAGTG : 002 4  F
+    // AAGTGA : 002 4  F
+    // AGTGAG : 013 5  R
+    // GTGAGG : 022 9  F
+    // TGAGGT : 011 10 R
+    // GAGGTA : 011 10 R
+    // AGGTAC : 011 10 R
+    // GGTACC : 011 13 F
+    // GTACCT : 011 13 F
+    // TACCTG : 011 13 F
+    // ACCTGN : N/A
+    // CCTGNC : N/A
+    // CTGNCC : N/A
+    // TGNCCT : N/A
+
+    // back end minimizers
+    // GNCCT : N/A
+    // NCCT  : N/A
+    // CCT   : 022 19 R
+
+    const read_id_t number_of_reads_to_add    = 1;
+    const std::uint64_t minimizer_size        = 3;
+    const std::uint64_t window_size           = 4;
+    const std::uint64_t read_id_of_first_read = 0;
+
+    const std::vector<char> merged_basepairs_h{'C', 'N', 'T', 'C', 'A', 'A', 'G', 'T', 'G', 'A', 'G', 'G', 'T', 'A', 'C', 'C', 'T', 'G', 'N', 'C', 'C', 'T'};
+
+    std::vector<ArrayBlock> read_id_to_basepairs_section_h;
+    read_id_to_basepairs_section_h.push_back({0, 22});
+
+    std::vector<representation_t> expected_representations_h;
+    expected_representations_h.push_back(0b000010);
+    expected_representations_h.push_back(0b000111);
+    expected_representations_h.push_back(0b001010);
+    expected_representations_h.push_back(0b000101);
+    expected_representations_h.push_back(0b000101);
+    expected_representations_h.push_back(0b001010);
+
+    std::vector<Minimizer::ReadidPositionDirection> expected_rest_h;
+    expected_rest_h.push_back({0, 4, 0});
+    expected_rest_h.push_back({0, 5, 1});
+    expected_rest_h.push_back({0, 9, 0});
+    expected_rest_h.push_back({0, 10, 1});
+    expected_rest_h.push_back({0, 13, 0});
+    expected_rest_h.push_back({0, 19, 1});
+
+    test_function(number_of_reads_to_add,
+                  minimizer_size,
+                  window_size,
+                  read_id_of_first_read,
+                  merged_basepairs_h,
+                  read_id_to_basepairs_section_h,
+                  expected_representations_h,
+                  expected_rest_h,
+                  false);
+
+    // Test with minimizer hashing enabled
+    std::vector<representation_t> expected_representations_hashed_h;
+    expected_representations_hashed_h.push_back(1279515286);
+    expected_representations_hashed_h.push_back(831403820);
+    expected_representations_hashed_h.push_back(1279515286);
+    expected_representations_hashed_h.push_back(256012005);
+    expected_representations_hashed_h.push_back(256012005);
+    expected_representations_hashed_h.push_back(74735385);
+    expected_representations_hashed_h.push_back(2131569582);
+
+    std::vector<Minimizer::ReadidPositionDirection> expected_rest_hashed_h;
+    expected_rest_hashed_h.push_back({0, 2, 0});
+    expected_rest_hashed_h.push_back({0, 6, 1});
+    expected_rest_hashed_h.push_back({0, 7, 1});
+    expected_rest_hashed_h.push_back({0, 11, 0});
+    expected_rest_hashed_h.push_back({0, 12, 1});
+    expected_rest_hashed_h.push_back({0, 15, 0});
+    expected_rest_hashed_h.push_back({0, 19, 0});
+
+    test_function(number_of_reads_to_add,
+                  minimizer_size,
+                  window_size,
+                  read_id_of_first_read,
+                  merged_basepairs_h,
+                  read_id_to_basepairs_section_h,
+                  expected_representations_hashed_h,
+                  expected_rest_hashed_h,
+                  true);
+}
+
 } // namespace cudamapper
 
 } // namespace genomeworks
